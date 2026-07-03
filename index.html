@@ -153,6 +153,9 @@
     <label for="roundtrip">Retourfahrt einberechnen (Fahrer muss zurück)</label>
   </div>
 
+  <label for="customer">Kundenname (optional, erscheint auf der Offerte)</label>
+  <input type="text" id="customer" placeholder="z.B. Herr Meier">
+
   <button id="calcBtn">Distanz berechnen & Offerte erstellen</button>
   <div class="status" id="status"></div>
   <div class="error" id="error"></div>
@@ -164,6 +167,8 @@
   <div class="result-line"><span>Ansatz pro km</span><span id="rateShown">–</span></div>
   <div class="result-line"><span>Grundpauschale</span><span id="baseShown">–</span></div>
   <div class="result-total"><span>Offerte Total</span><span id="total">–</span></div>
+  <button id="whatsappBtn">📲 Per WhatsApp senden</button>
+  <button class="secondary" id="copyBtn">Text kopieren</button>
   <button class="secondary" id="saveBtn">In Verlauf speichern</button>
 </div>
 
@@ -173,6 +178,12 @@
 
   <label for="base">Grundpauschale (CHF, optional)</label>
   <input type="number" id="base" step="1" value="0">
+
+  <label for="company">Firmenname (optional, erscheint auf der Offerte)</label>
+  <input type="text" id="company" placeholder="z.B. Meier Motorrad Transporte">
+
+  <label for="phone">Telefon (optional, erscheint auf der Offerte)</label>
+  <input type="text" id="phone" placeholder="z.B. 079 123 45 67">
 
   <p class="muted">Diese Werte werden auf diesem Handy gespeichert und bei der nächsten Offerte automatisch wieder vorgeschlagen.</p>
 </div>
@@ -184,16 +195,21 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const pickupEl = $('pickup'), deliveryEl = $('delivery');
+const pickupEl = $('pickup'), deliveryEl = $('delivery'), customerEl = $('customer');
 const rateEl = $('rate'), baseEl = $('base'), roundtripEl = $('roundtrip');
+const companyEl = $('company'), phoneEl = $('phone');
 const statusEl = $('status'), errorEl = $('error');
 const resultCard = $('resultCard');
 
 // Restore saved settings
 rateEl.value = localStorage.getItem('mt_rate') || rateEl.value;
 baseEl.value = localStorage.getItem('mt_base') || baseEl.value;
+companyEl.value = localStorage.getItem('mt_company') || '';
+phoneEl.value = localStorage.getItem('mt_phone') || '';
 rateEl.addEventListener('change', () => localStorage.setItem('mt_rate', rateEl.value));
 baseEl.addEventListener('change', () => localStorage.setItem('mt_base', baseEl.value));
+companyEl.addEventListener('change', () => localStorage.setItem('mt_company', companyEl.value));
+phoneEl.addEventListener('change', () => localStorage.setItem('mt_phone', phoneEl.value));
 
 let lastResult = null;
 
@@ -254,6 +270,7 @@ $('calcBtn').addEventListener('click', async () => {
     lastResult = {
       date: new Date().toLocaleDateString('de-CH'),
       pickup, delivery,
+      customer: customerEl.value.trim(),
       kmSingle: kmSingle.toFixed(1),
       kmBilled: kmBilled.toFixed(1),
       rate, base, total: total.toFixed(2)
@@ -264,6 +281,56 @@ $('calcBtn').addEventListener('click', async () => {
   } catch (e) {
     statusEl.textContent = '';
     errorEl.textContent = e.message || 'Fehler bei der Berechnung.';
+  }
+});
+
+function buildOfferText(r) {
+  const company = companyEl.value.trim();
+  const phone = phoneEl.value.trim();
+  const lines = [];
+  lines.push('🏍️ Offerte Motorradtransport');
+  if (company) lines.push(company);
+  lines.push('');
+  if (r.customer) lines.push(`An: ${r.customer}`);
+  lines.push(`Abholung: ${r.pickup}`);
+  lines.push(`Lieferung: ${r.delivery}`);
+  lines.push(`Distanz: ${r.kmBilled} km`);
+  lines.push('');
+  lines.push(`Preis: ${fmtCHF(parseFloat(r.total))}`);
+  lines.push('');
+  lines.push('Diese Offerte ist freibleibend.');
+  if (phone) lines.push(`Kontakt: ${phone}`);
+  return lines.join('\n');
+}
+
+async function shareOffer(r) {
+  const text = buildOfferText(r);
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'Offerte Motorradtransport', text });
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return; // user cancelled
+      // fall through to WhatsApp link
+    }
+  }
+  window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+}
+
+$('whatsappBtn').addEventListener('click', () => {
+  if (!lastResult) return;
+  shareOffer(lastResult);
+});
+
+$('copyBtn').addEventListener('click', async () => {
+  if (!lastResult) return;
+  const text = buildOfferText(lastResult);
+  try {
+    await navigator.clipboard.writeText(text);
+    statusEl.textContent = 'Text kopiert!';
+    setTimeout(() => { statusEl.textContent = ''; }, 2000);
+  } catch (e) {
+    errorEl.textContent = 'Kopieren nicht möglich.';
   }
 });
 
@@ -282,12 +349,19 @@ function renderHistory() {
     el.innerHTML = '<p class="muted">Noch keine gespeicherten Offerten.</p>';
     return;
   }
-  el.innerHTML = history.map(h => `
+  el.innerHTML = history.map((h, i) => `
     <div class="history-item">
       <b>${fmtCHF(parseFloat(h.total))}</b> — ${h.kmBilled} km · ${h.date}<br>
-      <span class="muted">${h.pickup} → ${h.delivery}</span>
+      <span class="muted">${h.pickup} → ${h.delivery}</span><br>
+      <button class="secondary" style="margin-top:8px;padding:8px;font-size:13px;" data-idx="${i}">📲 Erneut senden</button>
     </div>
   `).join('');
+  el.querySelectorAll('button[data-idx]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const h = history[parseInt(btn.dataset.idx, 10)];
+      shareOffer(h);
+    });
+  });
 }
 renderHistory();
 </script>
