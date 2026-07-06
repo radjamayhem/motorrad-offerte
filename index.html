@@ -85,6 +85,28 @@
     background: #e5e5ea;
     color: #1c1c1e;
   }
+  .stop-row { margin-top: 14px; }
+  .stop-row:first-of-type { margin-top: 0; }
+  .stop-inputwrap {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .stop-inputwrap input { flex: 1; }
+  .remove-stop-btn {
+    width: 40px;
+    flex: none;
+    margin: 0;
+    padding: 12px 0;
+    background: #ffe5e5;
+    color: #d70015;
+    font-size: 18px;
+    line-height: 1;
+    border-radius: 10px;
+  }
+  #addStopBtn {
+    margin-top: 12px;
+  }
   .result {
     display: none;
   }
@@ -105,6 +127,18 @@
     border-top: 2px solid #1c1c1e;
     font-size: 20px;
     font-weight: 700;
+  }
+  .legs-list {
+    margin: 4px 0 12px;
+    padding: 0;
+    list-style: none;
+    font-size: 13px;
+    color: #666;
+  }
+  .legs-list li {
+    padding: 4px 0;
+    display: flex;
+    justify-content: space-between;
   }
   .status {
     text-align: center;
@@ -142,15 +176,13 @@
 </header>
 
 <div class="card">
-  <label for="pickup">Abholadresse</label>
-  <input type="text" id="pickup" placeholder="z.B. Bahnhofstrasse 1, Zürich">
-
-  <label for="delivery">Lieferadresse</label>
-  <input type="text" id="delivery" placeholder="z.B. Marktgasse 5, Bern">
+  <label style="margin-top:0;">Route (Stopps in Reihenfolge)</label>
+  <div id="stopsContainer"></div>
+  <button class="secondary" id="addStopBtn" type="button">+ Stopp hinzufügen</button>
 
   <div class="checkbox-row">
     <input type="checkbox" id="roundtrip">
-    <label for="roundtrip">Retourfahrt einberechnen (Fahrer muss zurück)</label>
+    <label for="roundtrip">Rückfahrt zum Startpunkt einberechnen</label>
   </div>
 
   <label for="customer">Kundenname (optional, erscheint auf der Offerte)</label>
@@ -162,8 +194,8 @@
 </div>
 
 <div class="card result" id="resultCard">
-  <div class="result-line"><span>Distanz (einfach)</span><span id="distSingle">–</span></div>
-  <div class="result-line"><span>Distanz (verrechnet)</span><span id="distBilled">–</span></div>
+  <ul class="legs-list" id="legsList"></ul>
+  <div class="result-line"><span>Gesamtdistanz</span><span id="distTotal">–</span></div>
   <div class="result-line"><span>Ansatz pro km</span><span id="rateShown">–</span></div>
   <div class="result-line"><span>Grundpauschale</span><span id="baseShown">–</span></div>
   <div class="result-total"><span>Offerte Total</span><span id="total">–</span></div>
@@ -195,11 +227,56 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const pickupEl = $('pickup'), deliveryEl = $('delivery'), customerEl = $('customer');
+const customerEl = $('customer');
 const rateEl = $('rate'), baseEl = $('base'), roundtripEl = $('roundtrip');
 const companyEl = $('company'), phoneEl = $('phone');
 const statusEl = $('status'), errorEl = $('error');
 const resultCard = $('resultCard');
+const stopsContainer = $('stopsContainer');
+const addStopBtn = $('addStopBtn');
+
+const MIN_STOPS = 2;
+const MAX_STOPS = 6;
+let stops = ['', '']; // address strings in visiting order
+
+function stopLabel(i, total) {
+  if (i === 0) return `Stop ${i + 1} — Abholung / Start`;
+  if (i === total - 1) return `Stop ${i + 1} — Ziel / Endpunkt`;
+  return `Stop ${i + 1} — Zwischenstopp`;
+}
+
+function renderStops() {
+  stopsContainer.innerHTML = stops.map((val, i) => `
+    <div class="stop-row">
+      <label>${stopLabel(i, stops.length)}</label>
+      <div class="stop-inputwrap">
+        <input type="text" class="stop-input" data-idx="${i}" placeholder="Adresse eingeben" value="${val.replace(/"/g, '&quot;')}">
+        ${stops.length > MIN_STOPS ? `<button type="button" class="remove-stop-btn" data-remove="${i}">×</button>` : ''}
+      </div>
+    </div>
+  `).join('');
+
+  stopsContainer.querySelectorAll('.stop-input').forEach(inp => {
+    inp.addEventListener('input', () => {
+      stops[parseInt(inp.dataset.idx, 10)] = inp.value;
+    });
+  });
+  stopsContainer.querySelectorAll('[data-remove]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      stops.splice(parseInt(btn.dataset.remove, 10), 1);
+      renderStops();
+    });
+  });
+
+  addStopBtn.style.display = stops.length >= MAX_STOPS ? 'none' : 'block';
+}
+renderStops();
+
+addStopBtn.addEventListener('click', () => {
+  if (stops.length >= MAX_STOPS) return;
+  stops.push('');
+  renderStops();
+});
 
 // Restore saved settings
 rateEl.value = localStorage.getItem('mt_rate') || rateEl.value;
@@ -222,13 +299,17 @@ async function geocode(address) {
   return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon), label: data[0].display_name };
 }
 
-async function routeDistanceKm(from, to) {
-  const url = `https://router.project-osrm.org/route/v1/driving/${from.lon},${from.lat};${to.lon},${to.lat}?overview=false`;
+async function routeMultiStop(points) {
+  const coordsStr = points.map(p => `${p.lon},${p.lat}`).join(';');
+  const url = `https://router.project-osrm.org/route/v1/driving/${coordsStr}?overview=false`;
   const res = await fetch(url);
   if (!res.ok) throw new Error('Routenberechnung fehlgeschlagen');
   const data = await res.json();
   if (!data.routes || !data.routes.length) throw new Error('Keine Route gefunden');
-  return data.routes[0].distance / 1000; // meters -> km
+  return {
+    totalKm: data.routes[0].distance / 1000,
+    legsKm: data.routes[0].legs.map(l => l.distance / 1000)
+  };
 }
 
 function fmtCHF(n) {
@@ -241,10 +322,14 @@ function fmtKm(n) {
 $('calcBtn').addEventListener('click', async () => {
   errorEl.textContent = '';
   resultCard.classList.remove('visible');
-  const pickup = pickupEl.value.trim();
-  const delivery = deliveryEl.value.trim();
-  if (!pickup || !delivery) {
-    errorEl.textContent = 'Bitte beide Adressen eingeben.';
+
+  const addresses = stops.map(s => s.trim());
+  if (addresses.some(a => !a)) {
+    errorEl.textContent = 'Bitte alle Adressfelder ausfüllen (oder leere Stopps entfernen).';
+    return;
+  }
+  if (addresses.length < MIN_STOPS) {
+    errorEl.textContent = 'Mindestens 2 Adressen benötigt.';
     return;
   }
 
@@ -253,26 +338,35 @@ $('calcBtn').addEventListener('click', async () => {
 
   try {
     statusEl.textContent = 'Adressen werden gesucht…';
-    const [from, to] = await Promise.all([geocode(pickup), geocode(delivery)]);
+    const points = await Promise.all(addresses.map(geocode));
+
+    if (roundtripEl.checked) {
+      points.push(points[0]);
+    }
 
     statusEl.textContent = 'Fahrdistanz wird berechnet…';
-    const kmSingle = await routeDistanceKm(from, to);
-    const kmBilled = roundtripEl.checked ? kmSingle * 2 : kmSingle;
+    const { totalKm, legsKm } = await routeMultiStop(points);
 
-    const total = base + kmBilled * rate;
+    const total = base + totalKm * rate;
 
-    $('distSingle').textContent = fmtKm(kmSingle);
-    $('distBilled').textContent = fmtKm(kmBilled);
+    const legLabels = addresses.slice();
+    if (roundtripEl.checked) legLabels.push(addresses[0]);
+
+    $('legsList').innerHTML = legsKm.map((km, i) => `
+      <li><span>${i + 1}. ${legLabels[i]} → ${legLabels[i + 1]}</span><span>${fmtKm(km)}</span></li>
+    `).join('');
+    $('distTotal').textContent = fmtKm(totalKm);
     $('rateShown').textContent = fmtCHF(rate) + '/km';
     $('baseShown').textContent = fmtCHF(base);
     $('total').textContent = fmtCHF(total);
 
     lastResult = {
       date: new Date().toLocaleDateString('de-CH'),
-      pickup, delivery,
+      stops: addresses,
+      roundtrip: roundtripEl.checked,
       customer: customerEl.value.trim(),
-      kmSingle: kmSingle.toFixed(1),
-      kmBilled: kmBilled.toFixed(1),
+      kmTotal: totalKm.toFixed(1),
+      legsKm: legsKm.map(k => k.toFixed(1)),
       rate, base, total: total.toFixed(2)
     };
 
@@ -292,9 +386,19 @@ function buildOfferText(r) {
   if (company) lines.push(company);
   lines.push('');
   if (r.customer) lines.push(`An: ${r.customer}`);
-  lines.push(`Abholung: ${r.pickup}`);
-  lines.push(`Lieferung: ${r.delivery}`);
-  lines.push(`Distanz: ${r.kmBilled} km`);
+
+  if (r.stops) {
+    lines.push('Route:');
+    r.stops.forEach((s, i) => lines.push(`${i + 1}. ${s}`));
+    if (r.roundtrip) lines.push(`${r.stops.length + 1}. ${r.stops[0]} (Rückfahrt)`);
+    lines.push(`Distanz gesamt: ${r.kmTotal} km`);
+  } else {
+    // legacy single pickup/delivery entries
+    lines.push(`Abholung: ${r.pickup}`);
+    lines.push(`Lieferung: ${r.delivery}`);
+    lines.push(`Distanz: ${r.kmBilled} km`);
+  }
+
   lines.push('');
   lines.push(`Preis: ${fmtCHF(parseFloat(r.total))}`);
   lines.push('');
@@ -342,6 +446,14 @@ $('saveBtn').addEventListener('click', () => {
   renderHistory();
 });
 
+function routeSummary(h) {
+  if (h.stops) return h.stops.join(' → ') + (h.roundtrip ? ' → ' + h.stops[0] : '');
+  return `${h.pickup} → ${h.delivery}`;
+}
+function kmSummary(h) {
+  return h.stops ? h.kmTotal : h.kmBilled;
+}
+
 function renderHistory() {
   const history = JSON.parse(localStorage.getItem('mt_history') || '[]');
   const el = $('history');
@@ -351,8 +463,8 @@ function renderHistory() {
   }
   el.innerHTML = history.map((h, i) => `
     <div class="history-item">
-      <b>${fmtCHF(parseFloat(h.total))}</b> — ${h.kmBilled} km · ${h.date}<br>
-      <span class="muted">${h.pickup} → ${h.delivery}</span><br>
+      <b>${fmtCHF(parseFloat(h.total))}</b> — ${kmSummary(h)} km · ${h.date}<br>
+      <span class="muted">${routeSummary(h)}</span><br>
       <button class="secondary" style="margin-top:8px;padding:8px;font-size:13px;" data-idx="${i}">📲 Erneut senden</button>
     </div>
   `).join('');
